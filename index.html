@@ -5,13 +5,11 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Simple JSON Quiz</title>
 <style>
-  /* very minimal, human-made look */
   :root{ --ink:#111; --muted:#666; --line:#ddd; --ok:#2d7a2d; --no:#b3261e; --warn:#8f4b00; }
   *{ box-sizing:border-box }
   body{ margin:0; font:16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:var(--ink); background:#fff; }
   .wrap{ max-width:720px; margin:24px auto; padding:0 16px }
   h1{ margin:0 0 6px; font-size:22px }
-  p.hint{ margin:.25rem 0 1rem; color:var(--muted) }
   section{ border:1px solid var(--line); border-radius:8px; padding:14px; margin-top:12px }
   .row{ display:flex; gap:8px; flex-wrap:wrap; align-items:center }
   .pill{ padding:4px 10px; border:1px solid var(--line); border-radius:999px; color:var(--muted) }
@@ -22,17 +20,17 @@
   .choice{ display:flex; gap:8px; align-items:center; padding:10px; border:1px solid var(--line); border-radius:6px; cursor:pointer; background:#fff }
   .choice:hover{ background:#fbfbfb }
   .selected{ background:#f8f8f8; border-color:#bbb }
-  /* used only on the result screen */
-  .correct{ border-color:var(--ok); outline:2px solid rgba(45,122,45,.2) }
-  .wrong{ border-color:var(--no); outline:2px solid rgba(179,38,30,.15) }
   .note{ color:var(--muted); margin-top:8px }
   .review-item{ border-top:1px solid var(--line); padding-top:10px; margin-top:10px }
   .good{ color:var(--ok) } .bad{ color:var(--no) }
 
-  /* NEW: timer styling */
+  /* timer */
   .timer{ font-variant-numeric: tabular-nums; }
-  .timer.warn{ color:var(--warn); border-color:#f2d3a1 }
-  .timer.danger{ color:var(--no); border-color:#f4c7c3 }
+  .timer.warn{ color:var(--warn) }
+  .timer.danger{ color:var(--no) }
+  /* layout: Back left, Next/Finish right */
+  .nav{ display:flex; justify-content:space-between; gap:8px; margin-top:10px }
+  .nav-left, .nav-right{ display:flex; gap:8px }
 </style>
 </head>
 <body>
@@ -47,18 +45,6 @@
       <input id="file" type="file" accept=".json" hidden>
       <span class="pill">Questions: <b id="count">—</b></span>
       <span class="pill">Best: <b id="best">0</b></span>
-
-      <!-- NEW: duration select -->
-      <label class="pill" style="display:flex;gap:6px;align-items:center">
-        Time:
-        <select id="dur" style="border:1px solid var(--line); border-radius:999px; padding:2px 6px; background:#fff">
-          <option value="30">0:30</option>
-          <option value="60">1:00</option>
-          <option value="120" selected>2:00</option>
-          <option value="300">5:00</option>
-          <option value="900">15:00</option>
-        </select>
-      </label>
     </div>
   </section>
 
@@ -66,17 +52,22 @@
   <section id="quiz" style="display:none">
     <div class="row">
       <span class="pill">Q <b id="qNow">1</b>/<b id="qTotal">1</b></span>
-      <!-- NEW: live timer pill -->
-      <span class="pill timer" id="timeLeft">--:--</span>
-      <!-- live score hidden by design (final score only) -->
+      <span class="pill timer" id="timeLeft">0:30</span>
     </div>
 
     <div class="q" id="qText"></div>
     <div class="choices" id="choices"></div>
 
-    <div class="row" style="margin-top:10px">
-      <button id="next" disabled>Next</button>
+    <div class="nav">
+      <div class="nav-left">
+        <button id="back" style="display:none">Back</button>
+      </div>
+      <div class="nav-right">
+        <button id="next" disabled>Next</button>
+        <button id="finish" style="display:none" disabled>Finish</button>
+      </div>
     </div>
+
     <div class="note" id="note">Choose one option. I’ll save it silently; results come at the end.</div>
   </section>
 
@@ -94,10 +85,6 @@
 </div>
 
 <script>
-/* ===========
-   Simple JS
-   =========== */
-
 /* elements */
 const el = (s, r=document) => r.querySelector(s);
 const ui = {
@@ -105,24 +92,26 @@ const ui = {
   start: el('#start'), pick: el('#pick'), file: el('#file'),
   count: el('#count'), best: el('#best'),
   qNow: el('#qNow'), qTotal: el('#qTotal'), qText: el('#qText'),
-  choices: el('#choices'), next: el('#next'), note: el('#note'),
+  choices: el('#choices'),
+  back: el('#back'), next: el('#next'), finish: el('#finish'),
+  note: el('#note'),
   finalScore: el('#finalScore'), finalOut: el('#finalOut'), acc: el('#acc'),
   review: el('#review'), again: el('#again'),
-  /* NEW: timer + duration */
-  timeLeft: el('#timeLeft'), dur: el('#dur')
+  timeLeft: el('#timeLeft')
 };
 
 /* state */
-let QUESTIONS = [];      // loaded from JSON
-let order = [];          // randomized order of indexes
-let i = 0;               // pointer into order
-let recap = [];          // {q, chosen, correct, choices, why}
+let QUESTIONS = [];
+let order = [];
+let i = 0;
+let recap = [];     // per index: { q, chosen, correct, choices, why }
 let score = 0;
-
-/* NEW: timer state */
-let remaining = 0;       // seconds
-let tickId = null;
 let finished = false;
+
+/* timer state (per-question 30s) */
+let remaining = 0;
+let tickId = null;
+const PER_Q_SECS = 30;
 
 /* helpers */
 const shuffle = a => { for(let k=a.length-1;k>0;k--){ const j=Math.floor(Math.random()*(k+1)); [a[k],a[j]]=[a[j],a[k]] } return a; };
@@ -130,38 +119,27 @@ const okQ = q => q && typeof q.question==='string' && Array.isArray(q.choices) &
                   Number.isInteger(q.answerIndex) && q.answerIndex>=0 && q.answerIndex<q.choices.length;
 const esc = s => String(s).replace(/[&<>"]/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
 
-/* NEW: timer helpers */
-function fmt(s){
-  s = Math.max(0, s|0);
-  const m = Math.floor(s/60), ss = s%60;
-  return `${m}:${ss<10?'0':''}${ss}`;
-}
-function clearTimer(){
-  if(tickId){ clearInterval(tickId); tickId = null; }
-  ui.timeLeft.classList.remove('warn','danger');
-}
-function startTimer(totalSecs){
-  remaining = totalSecs|0;
+/* timer utils */
+function fmt(s){ s = Math.max(0, s|0); const m = Math.floor(s/60), ss = s%60; return `${m}:${ss<10?'0':''}${ss}`; }
+function clearTimer(){ if(tickId){ clearInterval(tickId); tickId=null; } ui.timeLeft.classList.remove('warn','danger'); }
+function startTimer(total){
+  remaining = total|0;
   updateTimerUI();
   clearTimer();
   tickId = setInterval(()=>{
-    remaining--;
-    updateTimerUI();
-    if(remaining <= 0){
-      clearTimer();
-      timeUp();
-    }
+    remaining--; updateTimerUI();
+    if(remaining<=0){ clearTimer(); timeUp(); }
   }, 1000);
 }
 function updateTimerUI(){
   ui.timeLeft.textContent = fmt(remaining);
-  ui.timeLeft.classList.toggle('warn', remaining <= 30 && remaining > 10);
-  ui.timeLeft.classList.toggle('danger', remaining <= 10);
+  ui.timeLeft.classList.toggle('warn', remaining<=10 && remaining>5);
+  ui.timeLeft.classList.toggle('danger', remaining<=5);
 }
 function timeUp(){
-  if(finished) return;
-  ui.note.textContent = 'Time’s up. Showing results…';
-  finish(); // auto-close quiz and go to results
+  // Auto-advance; on last question, auto-finish
+  if(i < QUESTIONS.length-1){ i++; render(); }
+  else { finish(); }
 }
 
 /* screens */
@@ -171,10 +149,10 @@ function show(name){
   ui.result.style.display = name==='result'? 'block' : 'none';
 }
 
-/* load default questions.json (works when served over http) */
+/* data */
 async function loadDefault(){
   try{
-    const res = await fetch('questions.json', {cache:'no-store'});
+    const res = await fetch('questions.json',{cache:'no-store'});
     if(!res.ok) throw new Error();
     const data = await res.json();
     return data.filter(okQ);
@@ -189,16 +167,14 @@ function start(){
   ui.qTotal.textContent = QUESTIONS.length;
   show('quiz');
   render();
-
-  /* NEW: kick off countdown */
-  const secs = Number(ui.dur.value) || 120;
-  startTimer(secs);
 }
+
 function render(){
   const q = QUESTIONS[order[i]];
   ui.qNow.textContent = i+1;
   ui.qText.textContent = q.question;
 
+  // build choices
   ui.choices.innerHTML = '';
   q.choices.forEach((text, idx) => {
     const row = document.createElement('label');
@@ -208,47 +184,69 @@ function render(){
     ui.choices.appendChild(row);
   });
 
-  ui.next.disabled = true;
+  // restore previous selection if present
+  const prev = recap[i];
+  if(prev && Number.isInteger(prev.chosen)){
+    const chosen = prev.chosen;
+    const rows = [...ui.choices.children];
+    if(rows[chosen]){
+      rows.forEach(r=>r.classList.remove('selected'));
+      rows[chosen].classList.add('selected');
+      const input = rows[chosen].querySelector('input[type="radio"]');
+      if(input) input.checked = true;
+      ui.next.disabled   = (i===QUESTIONS.length-1); // next hidden on last anyway
+      ui.finish.disabled = (i!==QUESTIONS.length-1) ? true : false; // enabled on last if chosen exists
+    }
+  }else{
+    ui.next.disabled = true;
+    ui.finish.disabled = true;
+  }
+
+  // buttons show/hide
+  ui.back.style.display   = i===0 ? 'none' : 'inline-block';
+  ui.next.style.display   = (i===QUESTIONS.length-1) ? 'none' : 'inline-block';
+  ui.finish.style.display = (i===QUESTIONS.length-1) ? 'inline-block' : 'none';
+
   ui.note.textContent = 'Choose one option. I’ll save it silently; results come at the end.';
+
+  // restart per-question timer
+  startTimer(PER_Q_SECS);
 }
 
-/* record the answer only (no correctness now) */
+/* select */
 function choose(idx){
-  if(finished) return; // NEW: ignore clicks after finish
-  // clear highlight then mark selected
-  [...ui.choices.children].forEach((el,k)=>{ el.classList.remove('selected'); if(k===idx) el.classList.add('selected'); });
+  if(finished) return;
+  // highlight and check
+  const rows = [...ui.choices.children];
+  rows.forEach((el,k)=>{ el.classList.toggle('selected', k===idx); });
+  const input = rows[idx]?.querySelector('input[type="radio"]');
+  if(input) input.checked = true;
 
   const q = QUESTIONS[order[i]];
-  // save for end review (store once per question)
   recap[i] = { q: q.question, chosen: idx, correct: q.answerIndex, choices: q.choices, why: q.explanation || '' };
 
-  ui.note.textContent = 'Saved. Click Next.';
-  ui.next.disabled = false;
+  // enable the right button
+  if(i===QUESTIONS.length-1){ ui.finish.disabled = false; }
+  else { ui.next.disabled = false; }
 }
 
-/* next / finish */
-ui.next.addEventListener('click', () => {
-  if(finished) return;
-  if(i < QUESTIONS.length - 1){ i++; render(); }
-  else { finish(); }
-});
+/* nav */
+ui.next.addEventListener('click', () => { if(i<QUESTIONS.length-1){ i++; render(); } });
+ui.back.addEventListener('click', () => { if(i>0){ i--; render(); } });
+ui.finish.addEventListener('click', finish);
 
+/* finish */
 function finish(){
   if(finished) return;
   finished = true;
-
-  // NEW: stop timer
   clearTimer();
 
-  // compute score only now
   score = recap.reduce((sum, r)=> sum + (r && r.chosen === r.correct ? 1 : 0), 0);
-
   show('result');
   ui.finalScore.textContent = score;
   ui.finalOut.textContent = QUESTIONS.length;
   ui.acc.textContent = Math.round((score/QUESTIONS.length)*100) + '%';
 
-  // build review with green/red and explanations
   ui.review.innerHTML = (order.map((_, n) => recap[n]).map((r,n)=> {
       if(!r){ return `
         <div class="review-item">
@@ -269,7 +267,7 @@ function finish(){
   updateBest();
 }
 
-/* best score (stored locally) */
+/* best score */
 function updateBest(){
   const key='quiz_best_simple';
   const best = Number(localStorage.getItem(key) || 0);
