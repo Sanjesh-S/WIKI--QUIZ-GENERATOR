@@ -1,0 +1,37 @@
+[
+  {
+    "question": "Capital of India?",
+    "choices": ["New Delhi", "Mumbai", "Kolkata", "Chennai"],
+    "answerIndex": 0,
+    "category": "Geography",
+    "explanation": "New Delhi is the capital city of India."
+  },
+  {
+    "question": "2 + 2 × 3 = ?",
+    "choices": ["6", "8", "10", "12"],
+    "answerIndex": 1,
+    "category": "Math",
+    "explanation": "Multiply first: 2 + (2×3) = 8."
+  },
+  {
+    "question": "CSS is mainly used for…",
+    "choices": ["Structuring pages", "Styling pages", "Server code", "Databases"],
+    "answerIndex": 1,
+    "category": "Tech",
+    "explanation": "HTML = structure, CSS = style."
+  },
+  {
+    "question": "Who wrote the play 'Hamlet'?",
+    "choices": ["William Shakespeare", "Charles Dickens", "Leo Tolstoy", "Mark Twain"],
+    "answerIndex": 0,
+    "category": "Literature",
+    "explanation": "Shakespeare wrote Hamlet around 1600."
+  },
+  {
+    "question": "Which planet is known as the Red Planet?",
+    "choices": ["Earth", "Mars", "Jupiter", "Venus"],
+    "answerIndex": 1,
+    "category": "Science",
+    "explanation": "Mars looks red due to iron oxide on its surface."
+  }
+]

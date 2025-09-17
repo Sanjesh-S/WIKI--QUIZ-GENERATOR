@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Simple JSON Quiz</title>
+<style>
+  /* very minimal, human-made look */
+  :root{ --ink:#111; --muted:#666; --line:#ddd; --ok:#2d7a2d; --no:#b3261e; --warn:#8f4b00; }
+  *{ box-sizing:border-box }
+  body{ margin:0; font:16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:var(--ink); background:#fff; }
+  .wrap{ max-width:720px; margin:24px auto; padding:0 16px }
+  h1{ margin:0 0 6px; font-size:22px }
+  p.hint{ margin:.25rem 0 1rem; color:var(--muted) }
+  section{ border:1px solid var(--line); border-radius:8px; padding:14px; margin-top:12px }
+  .row{ display:flex; gap:8px; flex-wrap:wrap; align-items:center }
+  .pill{ padding:4px 10px; border:1px solid var(--line); border-radius:999px; color:var(--muted) }
+  button{ appearance:none; border:1px solid var(--line); background:#f8f8f8; color:var(--ink); padding:8px 12px; border-radius:6px; cursor:pointer }
+  button:disabled{ opacity:.6; cursor:not-allowed }
+  .q{ font-weight:600; margin:10px 0 }
+  .choices{ display:grid; gap:8px }
+  .choice{ display:flex; gap:8px; align-items:center; padding:10px; border:1px solid var(--line); border-radius:6px; cursor:pointer; background:#fff }
+  .choice:hover{ background:#fbfbfb }
+  .selected{ background:#f8f8f8; border-color:#bbb }
+  /* used only on the result screen */
+  .correct{ border-color:var(--ok); outline:2px solid rgba(45,122,45,.2) }
+  .wrong{ border-color:var(--no); outline:2px solid rgba(179,38,30,.15) }
+  .note{ color:var(--muted); margin-top:8px }
+  .review-item{ border-top:1px solid var(--line); padding-top:10px; margin-top:10px }
+  .good{ color:var(--ok) } .bad{ color:var(--no) }
+
+  /* NEW: timer styling */
+  .timer{ font-variant-numeric: tabular-nums; }
+  .timer.warn{ color:var(--warn); border-color:#f2d3a1 }
+  .timer.danger{ color:var(--no); border-color:#f4c7c3 }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Simple JSON Quiz</h1>
+
+  <!-- SETUP -->
+  <section id="setup">
+    <div class="row" style="margin-bottom:8px">
+      <button id="start">Start quiz</button>
+      <button id="pick">Use another JSON…</button>
+      <input id="file" type="file" accept=".json" hidden>
+      <span class="pill">Questions: <b id="count">—</b></span>
+      <span class="pill">Best: <b id="best">0</b></span>
+
+      <!-- NEW: duration select -->
+      <label class="pill" style="display:flex;gap:6px;align-items:center">
+        Time:
+        <select id="dur" style="border:1px solid var(--line); border-radius:999px; padding:2px 6px; background:#fff">
+          <option value="30">0:30</option>
+          <option value="60">1:00</option>
+          <option value="120" selected>2:00</option>
+          <option value="300">5:00</option>
+          <option value="900">15:00</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <!-- QUIZ -->
+  <section id="quiz" style="display:none">
+    <div class="row">
+      <span class="pill">Q <b id="qNow">1</b>/<b id="qTotal">1</b></span>
+      <!-- NEW: live timer pill -->
+      <span class="pill timer" id="timeLeft">--:--</span>
+      <!-- live score hidden by design (final score only) -->
+    </div>
+
+    <div class="q" id="qText"></div>
+    <div class="choices" id="choices"></div>
+
+    <div class="row" style="margin-top:10px">
+      <button id="next" disabled>Next</button>
+    </div>
+    <div class="note" id="note">Choose one option. I’ll save it silently; results come at the end.</div>
+  </section>
+
+  <!-- RESULT -->
+  <section id="result" style="display:none">
+    <h3 style="margin:0 0 6px">Results</h3>
+    <div class="row" style="margin-bottom:8px">
+      <span class="pill">Score: <b id="finalScore">0</b></span>
+      <span class="pill">Out of: <b id="finalOut">0</b></span>
+      <span class="pill">Accuracy: <b id="acc">0%</b></span>
+      <button id="again">Play again</button>
+    </div>
+    <div id="review"></div>
+  </section>
+</div>
+
+<script>
+/* ===========
+   Simple JS
+   =========== */
+
+/* elements */
+const el = (s, r=document) => r.querySelector(s);
+const ui = {
+  setup: el('#setup'), quiz: el('#quiz'), result: el('#result'),
+  start: el('#start'), pick: el('#pick'), file: el('#file'),
+  count: el('#count'), best: el('#best'),
+  qNow: el('#qNow'), qTotal: el('#qTotal'), qText: el('#qText'),
+  choices: el('#choices'), next: el('#next'), note: el('#note'),
+  finalScore: el('#finalScore'), finalOut: el('#finalOut'), acc: el('#acc'),
+  review: el('#review'), again: el('#again'),
+  /* NEW: timer + duration */
+  timeLeft: el('#timeLeft'), dur: el('#dur')
+};
+
+/* state */
+let QUESTIONS = [];      // loaded from JSON
+let order = [];          // randomized order of indexes
+let i = 0;               // pointer into order
+let recap = [];          // {q, chosen, correct, choices, why}
+let score = 0;
+
+/* NEW: timer state */
+let remaining = 0;       // seconds
+let tickId = null;
+let finished = false;
+
+/* helpers */
+const shuffle = a => { for(let k=a.length-1;k>0;k--){ const j=Math.floor(Math.random()*(k+1)); [a[k],a[j]]=[a[j],a[k]] } return a; };
+const okQ = q => q && typeof q.question==='string' && Array.isArray(q.choices) &&
+                  Number.isInteger(q.answerIndex) && q.answerIndex>=0 && q.answerIndex<q.choices.length;
+const esc = s => String(s).replace(/[&<>"]/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+
+/* NEW: timer helpers */
+function fmt(s){
+  s = Math.max(0, s|0);
+  const m = Math.floor(s/60), ss = s%60;
+  return `${m}:${ss<10?'0':''}${ss}`;
+}
+function clearTimer(){
+  if(tickId){ clearInterval(tickId); tickId = null; }
+  ui.timeLeft.classList.remove('warn','danger');
+}
+function startTimer(totalSecs){
+  remaining = totalSecs|0;
+  updateTimerUI();
+  clearTimer();
+  tickId = setInterval(()=>{
+    remaining--;
+    updateTimerUI();
+    if(remaining <= 0){
+      clearTimer();
+      timeUp();
+    }
+  }, 1000);
+}
+function updateTimerUI(){
+  ui.timeLeft.textContent = fmt(remaining);
+  ui.timeLeft.classList.toggle('warn', remaining <= 30 && remaining > 10);
+  ui.timeLeft.classList.toggle('danger', remaining <= 10);
+}
+function timeUp(){
+  if(finished) return;
+  ui.note.textContent = 'Time’s up. Showing results…';
+  finish(); // auto-close quiz and go to results
+}
+
+/* screens */
+function show(name){
+  ui.setup.style.display  = name==='setup' ? 'block' : 'none';
+  ui.quiz.style.display   = name==='quiz'  ? 'block' : 'none';
+  ui.result.style.display = name==='result'? 'block' : 'none';
+}
+
+/* load default questions.json (works when served over http) */
+async function loadDefault(){
+  try{
+    const res = await fetch('questions.json', {cache:'no-store'});
+    if(!res.ok) throw new Error();
+    const data = await res.json();
+    return data.filter(okQ);
+  }catch{ return []; }
+}
+
+/* start / render */
+function start(){
+  if(!QUESTIONS.length){ alert('No questions found. Place questions.json next to this file or import one.'); return; }
+  i = 0; recap = []; score = 0; finished = false;
+  order = shuffle([...QUESTIONS.keys()]);
+  ui.qTotal.textContent = QUESTIONS.length;
+  show('quiz');
+  render();
+
+  /* NEW: kick off countdown */
+  const secs = Number(ui.dur.value) || 120;
+  startTimer(secs);
+}
+function render(){
+  const q = QUESTIONS[order[i]];
+  ui.qNow.textContent = i+1;
+  ui.qText.textContent = q.question;
+
+  ui.choices.innerHTML = '';
+  q.choices.forEach((text, idx) => {
+    const row = document.createElement('label');
+    row.className = 'choice';
+    row.innerHTML = `<input type="radio" name="opt" value="${idx}"> <span>${esc(text)}</span>`;
+    row.addEventListener('click', () => choose(idx));
+    ui.choices.appendChild(row);
+  });
+
+  ui.next.disabled = true;
+  ui.note.textContent = 'Choose one option. I’ll save it silently; results come at the end.';
+}
+
+/* record the answer only (no correctness now) */
+function choose(idx){
+  if(finished) return; // NEW: ignore clicks after finish
+  // clear highlight then mark selected
+  [...ui.choices.children].forEach((el,k)=>{ el.classList.remove('selected'); if(k===idx) el.classList.add('selected'); });
+
+  const q = QUESTIONS[order[i]];
+  // save for end review (store once per question)
+  recap[i] = { q: q.question, chosen: idx, correct: q.answerIndex, choices: q.choices, why: q.explanation || '' };
+
+  ui.note.textContent = 'Saved. Click Next.';
+  ui.next.disabled = false;
+}
+
+/* next / finish */
+ui.next.addEventListener('click', () => {
+  if(finished) return;
+  if(i < QUESTIONS.length - 1){ i++; render(); }
+  else { finish(); }
+});
+
+function finish(){
+  if(finished) return;
+  finished = true;
+
+  // NEW: stop timer
+  clearTimer();
+
+  // compute score only now
+  score = recap.reduce((sum, r)=> sum + (r && r.chosen === r.correct ? 1 : 0), 0);
+
+  show('result');
+  ui.finalScore.textContent = score;
+  ui.finalOut.textContent = QUESTIONS.length;
+  ui.acc.textContent = Math.round((score/QUESTIONS.length)*100) + '%';
+
+  // build review with green/red and explanations
+  ui.review.innerHTML = (order.map((_, n) => recap[n]).map((r,n)=> {
+      if(!r){ return `
+        <div class="review-item">
+          <div><b>${n+1}. ${esc(QUESTIONS[order[n]].question)}</b></div>
+          <div class="bad">Your answer: — ✗</div>
+          <div>Correct: <b>${esc(QUESTIONS[order[n]].choices[QUESTIONS[order[n]].answerIndex])}</b></div>
+        </div>`; }
+      return `
+        <div class="review-item">
+          <div><b>${n+1}. ${esc(r.q)}</b></div>
+          <div class="${r.chosen===r.correct ? 'good' : 'bad'}">
+            Your answer: ${esc(r.choices[r.chosen] ?? '—')} ${r.chosen===r.correct ? '✓' : '✗'}
+          </div>
+          <div>Correct: <b>${esc(r.choices[r.correct])}</b></div>
+          ${r.why ? `<div class="note">${esc(r.why)}</div>` : ''}
+        </div>`;
+    }).join(''));
+  updateBest();
+}
+
+/* best score (stored locally) */
+function updateBest(){
+  const key='quiz_best_simple';
+  const best = Number(localStorage.getItem(key) || 0);
+  if(score>best) localStorage.setItem(key,String(score));
+  ui.best.textContent = Math.max(score, best);
+}
+
+/* import JSON */
+ui.pick.addEventListener('click', () => ui.file.click());
+ui.file.addEventListener('change', async (e) => {
+  const f = e.target.files[0]; if(!f) return;
+  try{
+    const data = JSON.parse(await f.text()).filter(okQ);
+    if(!data.length) throw new Error('No valid questions found.');
+    QUESTIONS = data;
+    ui.count.textContent = data.length;
+    alert(`Loaded ${data.length} questions from ${f.name}`);
+  }catch(err){ alert('Could not read that JSON: ' + err.message); }
+});
+
+/* other buttons */
+ui.start.addEventListener('click', start);
+ui.again.addEventListener('click', () => { clearTimer(); show('setup'); });
+
+/* boot */
+(async function init(){
+  QUESTIONS = await loadDefault();
+  ui.count.textContent = QUESTIONS.length || '—';
+  updateBest();
+  show('setup');
+})();
+</script>
+</body>
+</html>
